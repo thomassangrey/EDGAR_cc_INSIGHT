@@ -1,6 +1,108 @@
-import datetime
+
 import os, subprocess
 from collections import deque
+import base_classes
+from typing import Deque
+
+
+
+class Stream(object):
+
+	""" Data Stream class with text file argument
+		text file is input is 'file_name.csv' and lives in ./input
+		"""
+	def __init__(self, filename, inactivity_file, out_file,
+					offset, length=None):
+		
+		base_dir = '/'.join(os.getcwd().split('/'))
+
+		if len(filename.split('/')) > 1:
+			self.filename =  filename
+			self.inactivity_file =  inactivity_file
+			self.out_file =  out_file
+			print('Data file path is given as:' + filename )
+			print('Inactivity file path is given as:' + inactivity_file )
+		else:
+			self.filename = base_dir + '/input/' + filename
+			self.inactivity_file =  base_dir + '/input/' + inactivity_file
+		
+		ia = open(self.inactivity_file)
+		self.Inactivity_Period = float(ia.readline())    ## delta TIME intervals \
+														   ## are INCLUSIVE!!!
+		ia.close()
+		self.data = open(self.filename)
+		self.offset = offset
+		
+		## Try to get wc -l output from OS
+		if (0 == subprocess.check_call(["wc","-l","./input/log.csv"])):
+			wc = subprocess.check_output(["wc","-l","./input/log.csv"])
+			numlines = int(wc.decode().split('.')[0]) - 1
+			self.File_LineCount = numlines 
+		else:   ### slow for big files
+			with open(self.filename) as f:
+				self.File_LineCount = len(f.readlines()) - 1
+			f.close()
+
+		if (length == None) | (length + offset) > self.File_LineCount:
+			self.length = self.File_LineCount
+		else:
+			self.length = length
+	
+	
+	def __str__(self):
+		s1 = 'EDGAR data pulled from: ' + self.filename 
+		s2 = " at line number {0:2d}".format(self.offset)
+		return s1 + s2 
+
+class an_outputDQ(deque):
+	def __init__(self, out_file, a_DQ):
+		super().__init__(a_DQ)
+		self.out = out_file
+
+
+	def output(self):
+		"""Writes only Sessions_out which is a deque([dict()]) that 
+			   contains the lightly post-processed _Sessions_inactive_
+		"""
+	
+		with open(self.out, 'w') as out:
+			if len(self) > 0:
+				print('printing output..')
+				column_len = len(self[0])
+				for k in self:
+
+					idx = 0
+					for key, val in k.items():
+						idx += 1
+						if idx < column_len:
+							out.write('{0},'.format(val))
+						elif idx == column_len:
+							out.write('{0}\n'.format(val))
+
+		out.close()			
+		return self
+
+	def tally(self):
+		"""in-situ and post processing of input stream. Handles Accessions
+			and detwermines where Accessions go and manages when they expire
+			as closed sessions.
+			"""
+		prettySESSIONS = deque()	
+		for i in self:
+			session_time = int(i['posixTime'][-1] - i['posixTime'][0] + 1)  # CHECK! min time resolution? 
+			numfiles = len(i.a_FILE[i.a_FILE.file_keystr])
+			start_date = i['date'][0]
+			end_date = i['date'][-1]
+			start_time = i['time'][0]
+			end_time = i['time'][-1]
+			start = start_date + ' ' + start_time
+			end = end_date + ' ' + end_time
+			SO_dict = {'userIP': i['userIP'], 'start': start, 'end': end, \
+								'SESSION_time': session_time,'numfiles': numfiles}
+			prettySESSIONS.append(SO_dict)
+	
+		return prettySESSIONS 
+
 
 
 
@@ -19,23 +121,16 @@ class EDGAR_Raw(object):
 		self.length = Stream.length 
 		self.offset = Stream.offset
 		self.File_LineCount = Stream.File_LineCount
-		self.inactivity_period = Stream.inactivity_period
+		self.Inactivity_Period = Stream.Inactivity_Period
 		
 		# Defines a basic "Line of data" comprised in a data Block
 		self.Accessions = [dict() for i in range(Stream.length) ]
-		
-		return None
+	
 
-		# Thinking of the whole logfile DB, which goes back to 2003
-	def posixTime(self, date, time):
-		date_li = date.split('-')
-		time_li = time.split(':')
-		DT_args = [ int(i) for i in (date_li+time_li) ]
 
-		return datetime.datetime(*DT_args).timestamp()
 
 		# Builds the Raw data for a block defined by length L of records
-	def BUILD(self):
+	def BUILD(self, Stream):
 		""" Builds the raw data in the form of _Accessions_ of type
 			deque([dict()]). Keys are summarized: 
 				an_Accession  = {'userIP': <str>,'access_TIME': <float>,
@@ -47,11 +142,19 @@ class EDGAR_Raw(object):
 			if (i >= start):
 				if (i <= finish):
 					line_List = line.split(',')
-					Accession_time = self.posixTime(line_List[1],line_List[2])
-					an_Accession  = {'userIP': line_List[0],
-								  'access_TIME': Accession_time,
-								  'file_ID': line_List[5] + line_List[6],
-								  'date_time_str': line_List[1]+ ' ' + line_List[2]}
+					userIP = line_List[0]
+					date = line_List[1]
+					time = line_List[2]
+					CIK = ':' + line_List[4]
+					file = line_List[5]
+					ext = line_List[6]
+					an_Accession  = {'userIP': userIP,
+								  'date': date,
+								  'time': time,
+								  'order': i,
+								  'CIK': CIK,
+								  'file': file,
+								  'ext': ext}
 					self.Accessions[i-(self.offset + 1)] = an_Accession 
 				else:
 					print('\n{0} lines read from input file\n'.format(i-1))
@@ -59,7 +162,7 @@ class EDGAR_Raw(object):
 		return self
 
 		
-class block_PROCESS(EDGAR_Raw):
+class block_PROCESS(base_classes.SESSIONS):
 	"""Subclasses EDGAR_Raw. Sessionizes a restricted segment
 	   of the input log. Identifies and Populates information lists
 	   with details about both active and inactive Sessions using 
@@ -68,107 +171,62 @@ class block_PROCESS(EDGAR_Raw):
 	   processing and write to output.
 	   """
 
-	def __init__(self, Stream):
-		super().__init__(Stream)
-		self.BUILD()
-		self.Sessions = deque()
-		self.Sessions_inactive = deque()
-		self.Sessions_out = deque()
+	def __init__(self, Stream, BLOCK_params):
+		
+		raw_BLOCK = EDGAR_Raw(Stream)
+		raw_BLOCK.length = BLOCK_params['length']
+		raw_BLOCK.offset = BLOCK_params['offset']
+		
+		super().__init__('userIP',raw_BLOCK.Inactivity_Period)
+		
+		self.BLOCK_length = raw_BLOCK.length
+		self.BLOCK_start = raw_BLOCK.offset
+		self.raw_BLOCK = raw_BLOCK.BUILD(Stream)
+		self.IA_SESSIONS = base_classes.SESSIONS('userIP', \
+									raw_BLOCK.Inactivity_Period)
 		self.out_file = Stream.out_file
+
 		return None
 
-	def is_NewSession(self, an_Accession):
-		
-		"""Identifies if an Accession opens a new Session or belongs 
-		   and existing Session. Returns deque location. 
-		   session_status =  {'exists': <bool>, 'Sessions Index': <int>}
-		   """
-		
-		session_status =  {'exists': False, 'Sessions Index': -1}
-		for i in range(len(self.Sessions)):
-			if self.Sessions[i]['userIP'] == an_Accession['userIP']:
-				session_status =  {'exists': True, 'Sessions Index': i}
-				break
-		return session_status
-		
 
-	def process_Accession(self, an_Accession, session_status):
-		""" Processes the Accession according to 'session_status'. If 
-			'session_status' is FALSE, then it creates and appends a new Session. 
-			If 'session_status' is TRUE Accession is processed and incorporated
-			into an existing Session element.
-			"""
-		if session_status['exists']:
-			idx = session_status['Sessions Index']
-			self.Sessions[idx]['access_TIMES'].append(an_Accession['access_TIME'])
-			self.Sessions[idx]['file_IDs'].append(an_Accession['file_ID'])
-			self.Sessions[idx]['DT_STRs'].append(an_Accession['date_time_str'])
-			self.Sessions.rotate(-idx)
-			S = self.Sessions.popleft()
-			self.Sessions.rotate(idx)
-			self.Sessions.append(S)
-		else:
-			Session_dict = {'userIP': an_Accession['userIP'], 
-							'access_TIMES': [an_Accession['access_TIME']], 
-							'file_IDs': [an_Accession['file_ID']], 
-							'DT_STRs':[an_Accession['date_time_str']]}
-			self.Sessions.append(Session_dict)
-		return self
 
-	def Update(self, an_Accession):
+
+	def update(self, IA_SESSIONS, an_Accession):
 		""" Tests to see if oldest Session is still active. If so, pops() it
 			and moves it to the attribut 'Sessions_inactive'
 			"""
-		def is_elapsed(self, an_Accession):
-			if self.inactivity_period < 0:
-				return True
-			else: 
-				most_recent_time = self.Sessions[0]['access_TIMES'][-1]  # CHECK!!
-				current_time = an_Accession['access_TIME']
-				return ((current_time - most_recent_time) > self.inactivity_period)
+		def is_elapsed(self,  an_Accession):
+			if len(self) > 0:
+				oldest = self[-1].a_DATE_TIME['posixTime'][-1]  # CHECK!!
+				current_time = base_classes.posixTime(self,an_Accession['date'], \
+									an_Accession['time'])
+				
+				return ((current_time  - oldest) > self.Inactivity_Period)
+			else:
+				return False	
 		
-		SL_len = len(self.Sessions)
-		while (is_elapsed(self, an_Accession) & (SL_len > 0)):
-			IA_Sess = self.Sessions.popleft()
-			SL_len += -1
-			self.Sessions_inactive.append(IA_Sess)
-		return self
+		def flag_IA_SESSION(self, Inactive_SESSION):
+			SESSION_start_time = Inactive_SESSION['posixTime'][-1] 
+			BLOCK_start = self.BLOCK_start
+			if SESSION_start_time  - BLOCK_start < self.Inactivity_Period:
+				return 'SAI'
+			else:
+				return 'SII'
+		
+		SESSION_len = len(self)
+		print(len(self))
+		IA_SESSIONS = deque()
+		while ( SESSION_len > 0):
+			if is_elapsed(self, an_Accession):
+				IA_SESSION = self.pop()
+				IA_SESSION.case = flag_IA_SESSION(self, IA_SESSION)
+				IA_SESSIONS.append(IA_SESSION)
+			else:
+				self.rotate(1)
+			SESSION_len -= 1
 
-	def tally(self):
-		"""in-situ and post processing of input stream. Handles Accessions
-			and detwermines where Accessions go and manages when they expire
-			as closed sessions.
-			"""
-		for i in self.Sessions_inactive:
-			session_time = i['access_TIMES'][-1] - i['access_TIMES'][0] + 1  # CHECK! min time resolution? 
-			numfiles = len(i['file_IDs'])
-			start_DT = i['DT_STRs'][0]
-			end_DT = i['DT_STRs'][-1]
-			SO_dict = {'userIP': i['userIP'], 'start_DT': start_DT,
-						'end_DT': end_DT, 'SESSION_time': session_time,
-						'Number_Accessed': numfiles}
-			self.Sessions_out.append(SO_dict)
 
-		return self
-
-	def output(self):
-		"""Writes only Sessions_out which is a deque([dict()]) that 
-			contains the lightly post-processed _Sessions_inactive_
-			"""
-		if len(self.Sessions_out) > 0:
-			with open(self.out_file, 'w') as out:
-				column_len = len(self.Sessions_out[0])
-				for k in self.Sessions_out:
-
-					idx = 0
-					for key, val in k.items():
-						idx += 1
-						if idx < column_len:
-							out.write('{0},'.format(val))
-						elif idx == column_len:
-							out.write('{0}\n'.format(val))
-			out.close()			
-		return self
+		return IA_SESSIONS
 
 	def sessionize_block(self):
 		""" Sessionizes the block (subset) of input data using all Accessions
@@ -177,20 +235,27 @@ class block_PROCESS(EDGAR_Raw):
 			program elements to convert all Sessions to Sessions_inactive,
 			and subsequently to Sessions_out for output.
 			"""
+		
 		idx = 0
-		for i in range(len(self.Accessions)):
+		for an_Accession in self.raw_BLOCK.Accessions:
+			
 			idx += 1
-			an_Accession = self.Accessions[i]
-			session_status = self.is_NewSession(an_Accession)
-			self.process_Accession(an_Accession, session_status)
-			if idx == self.File_LineCount :
-				self.inactivity_period = -1   # all sessions time out at EOS
-			self.Update(an_Accession)
-		self.tally()
-		self.output()
+			
+			user = base_classes.a_USER(userIP = an_Accession['userIP'])
+			date_time = base_classes.a_DATE_TIME(date = an_Accession['date'], 
+												 time = an_Accession['time'])
+			file = base_classes.a_FILE(file = an_Accession['file'], 
+									    ext = an_Accession['ext'], 
+									    CIK = an_Accession['CIK'])
+			userSESSION = base_classes.a_userSESSION(user, date_time, file, order = an_Accession['order'])
+
+			self.append(userSESSION)
+			
+
 		return self
+	
 
-
+		
 
 	#######################
 	# UNIT TESTS    BEGIN #
@@ -205,28 +270,7 @@ class block_PROCESS(EDGAR_Raw):
 			print(i.items())
 		return self
 
-	def UT_check_status(self,L=1):
-		"""Checks 'is_NewSession(an_Accession)' whether an Accession 
-		fits into an existing Session or should open a new Session. 
-		Tests repeated applications of 2 'Accessions[0]' and sequential
-		application of Accessions[0:L] on fresh instantiations of
-		'EDGAR_Raw.Build()'.
-		"""
-		print('hello from UT_check_status...')
-		print('Number of Accessions is {0}'.format(len(self.Accessions)))
-
-		L_Accessions = self.Accessions[0:L]
-		print('1st Acession presented to is_NewSession\n')
-		print(self.is_NewSession(L_Accessions[0]))
-		print('1st Acession presented again to is_NewSession\n')
-		print(self.is_NewSession(L_Accessions[0]))
-		print('\n Rebuilding block_PROCESS(EDGAR_Raw)...\n ')
-		self.__init__(self.Stream)
-		L_Accessions = self.Accessions[0:L]
-		for i in L_Accessions:
-			print(i.items())
-			print(self.is_NewSession(i))
-		return self
+	
 		
 	def UT_process_Accession(self,L=1):
 		"""Checks 'is_NewSession(an_Accession)' whether an Accession 
@@ -339,52 +383,6 @@ class block_PROCESS(EDGAR_Raw):
 
 
 
-class Stream(object):
-
-	""" Data Stream class with text file argument
-		text file is input is 'file_name.csv' and lives in ./input
-		"""
-	def __init__(self, filename, inactivity_file, out_file,
-					offset, length=None):
-		
-		base_dir = '/'.join(os.getcwd().split('/'))
-
-		if len(filename.split('/')) > 1:
-			self.filename =  filename
-			self.inactivity_file =  inactivity_file
-			self.out_file =  out_file
-			print('Data file path is given as:' + filename )
-			print('Inactivity file path is given as:' + inactivity_file )
-		else:
-			self.filename = base_dir + '/input/' + filename
-			self.inactivity_file =  base_dir + '/input/' + inactivity_file
-		
-		ia = open(self.inactivity_file)
-		self.inactivity_period = int(ia.readline())
-		ia.close()
-		self.data = open(self.filename)
-		self.offset = offset
-		
-		## Try to get wc -l output from OS
-		if (0 == subprocess.check_call(["wc","-l","./input/log.csv"])):
-			wc=subprocess.check_output(["wc","-l","./input/log.csv"])
-			numlines = int(wc.decode().split('.')[0]) - 1
-			self.File_LineCount = numlines 
-		else:   ### slow for big files
-			with open(self.filename) as f:
-				self.File_LineCount = len(f.readlines()) - 1
-			f.close()
-
-		if (length == None) | (length + offset) > self.File_LineCount:
-			self.length = self.File_LineCount
-		else:
-			self.length = length
-	
-	
-	def __str__(self):
-		s1 = 'EDGAR data pulled from: ' + self.filename 
-		s2 = " at line number {0:2d}".format(self.offset)
-		return s1 + s2 
 
 
 

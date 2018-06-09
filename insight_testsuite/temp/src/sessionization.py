@@ -2,6 +2,7 @@
 
 import sys
 import EDGAR
+from collections import deque
 
 name = sys.argv[0]
 logfile = sys.argv[1]
@@ -17,8 +18,19 @@ length = 100     # Number of lines to read
 a_Stream = EDGAR.Stream(logfile,inact_file, out_file, offset,length)
 
 
+BLOCK_params = {'length':100,'offset':0}
+ED = EDGAR.block_PROCESS(a_Stream, BLOCK_params).sessionize_block()
+last_Accession = ED.raw_BLOCK.Accessions[-1]
+ED.IA_SESSIONS = ED.update(ED.IA_SESSIONS, last_Accession)
+IA_SESSIONS = EDGAR.base_classes.SESSIONS(ED.IA_SESSIONS)
+pretty_IA_SESSIONS = EDGAR.an_outputDQ(ED.out_file, IA_SESSIONS).tally()
+ED.EOSdump()
 
-ED = EDGAR.block_PROCESS(a_Stream).sessionize_block()
+pretty_A_SESSIONS = EDGAR.an_outputDQ(ED.out_file, ED).tally()
+pretty_SESSIONS = EDGAR.base_classes.join(pretty_IA_SESSIONS,pretty_A_SESSIONS)
+
+EDGAR.an_outputDQ(ED.out_file, pretty_SESSIONS).output()
+
 
 ###  Some testing
 UT = False
