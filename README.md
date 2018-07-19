@@ -1,3 +1,12 @@
+This was part of a data challenge for the INSIGHT data engineering internship found here: https://github.com/InsightDataScience/edgar-analytics
+
+This code processes EDGAR log files retrieved from the SEC: https://www.sec.gov/edgar/searchedgar/webusers.htm
+
+From the home directory, exectute ./run.sh
+
+To test the code execute ./insight_testsuite/run_tests.sh 
+Some parameters described in USAGE can be modified in the main source file: ./src/sessionization.py
+
 USAGE:
 1) Set _length_ of file to read
 2) Set _offset_ of 0 means a 1-line header is skipped
